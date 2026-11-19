@@ -1,0 +1,8 @@
+{
+  "name": "MaKSET CareSync",
+  "description": "Connected Care. Anywhere. Offline-first Primary Healthcare (PHC) clinical, laboratory, pharmacy, referral, surveillance, and reporting system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
