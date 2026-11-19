@@ -2,9 +2,6 @@ name: Build MaKSET Android APK
 
 on:
   push:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 jobs:
@@ -19,7 +16,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
