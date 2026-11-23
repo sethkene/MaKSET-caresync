@@ -347,6 +347,9 @@ export const SURVEILLANCE_SIGNALS: SurveillanceSignal[] = [
 const initialPatients: Patient[] = [
   {
     id: 'MAK-002431',
+    uuid: '11111111-1111-4111-8111-000000002431',
+    shortId: '02431',
+    shortIdStatus: 'confirmed',
     name: 'Amina Musa',
     sex: 'Female',
     age: '28 years',
@@ -362,6 +365,9 @@ const initialPatients: Patient[] = [
   },
   {
     id: 'MAK-002377',
+    uuid: '11111111-1111-4111-8111-000000002377',
+    shortId: '02377',
+    shortIdStatus: 'confirmed',
     name: 'Ibrahim Sani',
     sex: 'Male',
     age: '4 years',
@@ -377,6 +383,9 @@ const initialPatients: Patient[] = [
   },
   {
     id: 'MAK-002402',
+    uuid: '11111111-1111-4111-8111-000000002402',
+    shortId: '02402',
+    shortIdStatus: 'confirmed',
     name: 'Zainab Bello',
     sex: 'Female',
     age: '31 years',

@@ -10,6 +10,12 @@ import {
   X,
 } from 'lucide-react';
 import { CareSyncState, Patient } from '../types/caresync';
+import {
+  getDisplayPatientId,
+  isValidNin,
+  maskNin,
+  normalizeNin,
+} from '../utils/patientIdentity';
 
 function getInitials(name: string): string {
   return name
@@ -19,10 +25,6 @@ function getInitials(name: string): string {
     .map((w) => w[0])
     .join('')
     .toUpperCase();
-}
-
-function maskNin(nin?: string): string {
-  return nin ? `•••••••${nin.slice(-4)}` : 'No NIN yet (temporary ID)';
 }
 
 interface PatientSearchViewProps {
@@ -46,7 +48,9 @@ export const PatientSearchView: React.FC<PatientSearchViewProps> = ({
     const q = query.trim().toLowerCase();
     if (!q) return state.patients;
     return state.patients.filter((p) =>
-      `${p.name} ${p.id} ${p.nin || ''} ${p.phone || ''}`.toLowerCase().includes(q)
+      `${p.name} ${p.shortId || ''} ${p.id} ${p.nin || ''} ${p.phone || ''}`
+        .toLowerCase()
+        .includes(q)
     );
   }, [query, state.patients]);
 
@@ -125,7 +129,9 @@ export const PatientSearchView: React.FC<PatientSearchViewProps> = ({
                     <div className="text-xs text-[#5D6E64] dark:text-[#98AEA1]">
                       {p.sex} · {p.age} ·{' '}
                       <span className="font-mono-tabular">
-                        {state.ninGateEnabled ? `NIN ${maskNin(p.nin)}` : p.id}
+                        {state.ninGateEnabled
+                          ? `NIN ${maskNin(p.nin)} · ID ${getDisplayPatientId(p)}`
+                          : `ID ${getDisplayPatientId(p)}`}
                       </span>
                     </div>
                   </div>
@@ -181,7 +187,7 @@ export const PatientSearchView: React.FC<PatientSearchViewProps> = ({
                   <div>
                     <div className="text-sm font-bold">{p.name}</div>
                     <div className="text-xs font-mono-tabular text-[#5D6E64] dark:text-[#98AEA1]">
-                      QR Payload: {p.id}
+                      QR Payload: ID {getDisplayPatientId(p)}
                     </div>
                   </div>
                   <QrCode className="h-5 w-5 text-[#0B5D34] dark:text-[#39C27A]" />
@@ -220,27 +226,27 @@ export const RegisterPatientView: React.FC<RegisterPatientViewProps> = ({
   const [allergies, setAllergies] = useState('');
   const [bloodGroup, setBloodGroup] = useState('O+');
 
-  // Optional NIMC / NIN capture
+  // Optional NIN capture (11 digits; verification & biometrics remain pending future admin activation)
   const [nin, setNin] = useState('');
-  const [noNinYet, setNoNinYet] = useState(false);
   const [pin, setPin] = useState('');
-  const [nimcVerified, setNimcVerified] = useState(false);
-  const [verifyingNimc, setVerifyingNimc] = useState(false);
   const [biometricConsent, setBiometricConsent] = useState(false);
 
   const fullName = `${firstName.trim()} ${surname.trim()}`.trim();
+  const cleanNin = normalizeNin(nin);
+
   const potentialDuplicate = useMemo(() => {
-    if (!fullName) return null;
+    if (!fullName && cleanNin.length !== 11) return null;
     const normName = fullName.toLowerCase();
     const normPhone = phone.replace(/\s+/g, '');
     return (
       existingPatients.find(
         (p) =>
-          p.name.toLowerCase() === normName ||
-          (normPhone.length >= 8 && (p.phone || '').replace(/\s+/g, '') === normPhone)
+          (normName && p.name.toLowerCase() === normName) ||
+          (normPhone.length >= 8 && (p.phone || '').replace(/\s+/g, '') === normPhone) ||
+          (cleanNin.length === 11 && p.nin === cleanNin)
       ) || null
     );
-  }, [existingPatients, fullName, phone]);
+  }, [cleanNin, existingPatients, fullName, phone]);
 
   const computeAge = (dateStr: string): string => {
     if (!dateStr) return 'Unknown age';
@@ -257,28 +263,24 @@ export const RegisterPatientView: React.FC<RegisterPatientViewProps> = ({
     return `${years} years`;
   };
 
-  const handleNimcScan = () => {
-    if (nin.trim().length !== 11) {
-      onToast('Enter the 11-digit NIN first');
-      return;
-    }
-    setVerifyingNimc(true);
-    window.setTimeout(() => {
-      setVerifyingNimc(false);
-      setNimcVerified(true);
-      onToast('Verified with NIMC (simulated)');
-    }, 1000);
-  };
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!firstName.trim() || !surname.trim()) {
       onToast('Enter both first name and surname');
       return;
     }
-    if (ninGateEnabled && !noNinYet && nin.trim().length !== 11) {
-      onToast('Enter the 11-digit NIN or choose No NIN yet');
+    if (cleanNin.length > 0 && !isValidNin(cleanNin)) {
+      onToast('NIN must be exactly 11 digits, or leave it blank');
       return;
+    }
+    if (cleanNin.length === 11) {
+      const existingWithNin = existingPatients.find((p) => p.nin === cleanNin);
+      if (existingWithNin) {
+        onToast(
+          `This NIN is already associated with ${existingWithNin.name} (ID ${getDisplayPatientId(existingWithNin)}).`
+        );
+        return;
+      }
     }
 
     onSavePatient({
@@ -291,8 +293,7 @@ export const RegisterPatientView: React.FC<RegisterPatientViewProps> = ({
       address: address.trim(),
       allergies: allergies.trim(),
       bloodGroup,
-      nin: noNinYet ? '' : nin.trim() || undefined,
-      idVerified: nimcVerified && !noNinYet ? 'Verified' : 'Not verified',
+      nin: cleanNin || undefined,
       pin: pin.trim() || '1234',
     });
   };
@@ -433,56 +434,49 @@ export const RegisterPatientView: React.FC<RegisterPatientViewProps> = ({
             className="w-full min-h-[44px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#192820] px-3.5 text-sm outline-none focus:border-[#0B5D34]"
           />
         </div>
+
+        <div className="border-t border-[#E3ECE6] dark:border-[#24352B] pt-4">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <label
+              htmlFor="patient-nin-input"
+              className="text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]"
+            >
+              National Identification Number (NIN){' '}
+              <span className="font-normal text-[#6B7C72] dark:text-[#84998D]">(optional)</span>
+            </label>
+            {cleanNin.length > 0 && (
+              <span
+                className={`text-xs font-mono-tabular font-semibold ${
+                  cleanNin.length === 11
+                    ? 'text-[#0B5D34] dark:text-[#39C27A]'
+                    : 'text-[#8A5A00] dark:text-amber-300'
+                }`}
+              >
+                {cleanNin.length}/11 digits
+              </span>
+            )}
+          </div>
+          <input
+            id="patient-nin-input"
+            type="text"
+            inputMode="numeric"
+            maxLength={11}
+            value={nin}
+            onChange={(e) => setNin(normalizeNin(e.target.value))}
+            placeholder="Enter 11-digit NIN if available (optional)"
+            className="w-full min-h-[44px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#192820] px-3.5 text-sm font-mono-tabular outline-none focus:border-[#0B5D34]"
+          />
+          <p className="mt-1.5 text-xs text-[#6B7C72] dark:text-[#84998D]">
+            Optional. Patients can complete registration with or without a NIN; a unique MaKSET Patient ID is generated automatically.
+          </p>
+        </div>
       </div>
 
       {ninGateEnabled && (
         <div className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5 space-y-4">
           <h3 className="font-display text-sm font-bold text-[#0B5D34] dark:text-[#39C27A]">
-            National ID (NIN) &amp; Verification
+            Additional Visit Verification Settings
           </h3>
-          <div>
-            <label className="mb-1.5 block text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]">
-              NIN (11 digits)
-            </label>
-            <input
-              type="text"
-              inputMode="numeric"
-              maxLength={11}
-              disabled={noNinYet}
-              value={nin}
-              onChange={(e) => setNin(e.target.value.replace(/\D/g, ''))}
-              placeholder="11-digit NIN"
-              className="w-full min-h-[44px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#192820] px-3.5 text-sm font-mono-tabular outline-none focus:border-[#0B5D34] disabled:opacity-50"
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setNoNinYet((v) => !v)}
-              className={`min-h-[40px] rounded-xl border px-3.5 text-xs font-semibold transition ${
-                noNinYet
-                  ? 'border-[#0B5D34] bg-[#0B5D34] text-white'
-                  : 'border-[#D9E3DD] dark:border-[#26382E] bg-[#F7FAF8] dark:bg-[#192820]'
-              }`}
-            >
-              No NIN yet, use a temporary ID
-            </button>
-
-            <button
-              type="button"
-              onClick={handleNimcScan}
-              disabled={noNinYet || verifyingNimc}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-[#0B5D34] px-3.5 text-xs font-semibold text-[#0B5D34] dark:text-[#39C27A] hover:bg-[#E6F3EC] disabled:opacity-50"
-            >
-              <Fingerprint className="h-4 w-4" />
-              {verifyingNimc
-                ? 'Scanning…'
-                : nimcVerified
-                  ? '✓ Verified with NIMC (simulated)'
-                  : 'Scan thumb and verify with NIMC'}
-            </button>
-          </div>
 
           <div>
             <label className="mb-1.5 block text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]">
@@ -508,7 +502,7 @@ export const RegisterPatientView: React.FC<RegisterPatientViewProps> = ({
                 : 'border-[#D9E3DD] dark:border-[#26382E]'
             }`}
           >
-            {biometricConsent ? '✓ ' : ''}Patient consents to saving an encrypted fingerprint template (pending NIMC/NDPA)
+            {biometricConsent ? '✓ ' : ''}Patient consents to future verification (pending formal authorization)
           </button>
         </div>
       )}
@@ -518,8 +512,8 @@ export const RegisterPatientView: React.FC<RegisterPatientViewProps> = ({
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
             <div>
-              <strong>Possible duplicate found on device:</strong> {potentialDuplicate.name} (
-              {potentialDuplicate.id}). Avoid creating duplicate records unless this is a distinct person.
+              <strong>Possible duplicate found on device:</strong> {potentialDuplicate.name} (ID{' '}
+              {getDisplayPatientId(potentialDuplicate)}). Avoid creating duplicate records unless this is a distinct person.
             </div>
           </div>
           <button
@@ -593,7 +587,7 @@ export const PatientVerifyView: React.FC<PatientVerifyViewProps> = ({
         <div>
           <div className="font-display text-base font-bold">{patient.name}</div>
           <div className="text-xs text-[#5D6E64] dark:text-[#98AEA1] font-mono-tabular">
-            NIN {maskNin(patient.nin)} · {patient.id}
+            NIN {maskNin(patient.nin)} · ID {getDisplayPatientId(patient)}
           </div>
         </div>
       </div>

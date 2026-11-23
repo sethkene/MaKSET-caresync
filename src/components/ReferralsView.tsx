@@ -145,6 +145,7 @@ export const ReferPatientView: React.FC<ReferPatientViewProps> = ({
 
 interface ReferralNoteViewProps {
   referral: Referral;
+  patientDisplayId?: string;
   isRegisteredFacility: boolean;
   onPromptAutoAccept: (referralId: string) => void;
   onViewAllReferrals: () => void;
@@ -153,6 +154,7 @@ interface ReferralNoteViewProps {
 
 export const ReferralNoteView: React.FC<ReferralNoteViewProps> = ({
   referral,
+  patientDisplayId,
   isRegisteredFacility,
   onPromptAutoAccept,
   onViewAllReferrals,
@@ -217,7 +219,7 @@ export const ReferralNoteView: React.FC<ReferralNoteViewProps> = ({
             'MAKSET REFERRAL NOTE',
             `From: ${referral.from}`,
             `To: ${referral.to}`,
-            `Patient: ${referral.patientName} (${referral.patientId})`,
+            `Patient: ${referral.patientName} (ID ${patientDisplayId || referral.patientId})`,
             `Reason: ${referral.reason}`,
             `Treatment given: ${referral.treatmentGiven}`,
             `Urgency: ${referral.urgency}`,

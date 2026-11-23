@@ -16,6 +16,7 @@ import {
   ScreenRoute,
   SurveillanceSignal,
 } from '../types/caresync';
+import { getDisplayPatientId } from '../utils/patientIdentity';
 
 interface ReportsViewProps {
   state: CareSyncState;
@@ -441,7 +442,9 @@ export const CaseNotificationView: React.FC<CaseNotificationViewProps> = ({
     <div className="space-y-5 max-w-2xl">
       <div className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5 space-y-4">
         <div className="text-xs text-[#5D6E64] dark:text-[#98AEA1]">
-          Patient context: <strong className="text-[#13221A] dark:text-[#EAF2ED]">{patient.name}</strong> ({patient.id})
+          Patient context:{' '}
+          <strong className="text-[#13221A] dark:text-[#EAF2ED]">{patient.name}</strong> (ID{' '}
+          <span className="font-mono-tabular">{getDisplayPatientId(patient)}</span>)
         </div>
 
         <div>

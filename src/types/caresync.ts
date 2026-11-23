@@ -82,6 +82,10 @@ export interface StaffMember {
 
 export interface Patient {
   id: string;
+  uuid?: string;
+  shortId?: string;
+  shortIdStatus?: 'local-provisional' | 'confirmed';
+  linkedMotherId?: string;
   name: string;
   sex: string;
   age: string;
@@ -92,8 +96,25 @@ export interface Patient {
   allergies: string;
   bloodGroup: string;
   nin?: string;
+  ninUpdatedAt?: string;
+  ninUpdatedBy?: string;
   idVerified?: 'Verified' | 'Not verified';
   pin?: string;
+}
+
+export interface MedicationOrder {
+  id: string;
+  source: 'catalogue' | 'manual';
+  drugName: string;
+  strength?: string;
+  dose?: string;
+  route?: string;
+  frequency?: string;
+  duration?: string;
+  quantity?: string;
+  instructions?: string;
+  recipient?: 'patient' | 'mother' | 'newborn';
+  displayLabel: string;
 }
 
 export interface Encounter {
@@ -108,6 +129,8 @@ export interface Encounter {
   diagnosis: string;
   diagnosisMethod: string;
   rx: string[];
+  newbornRx?: string[];
+  medicationOrders?: MedicationOrder[];
   rxStatus: string;
   outcome: string;
   notes: string;
@@ -134,6 +157,7 @@ export interface PharmacyTask {
   patientName: string;
   meds: string;
   items: string[];
+  medicationOrders?: MedicationOrder[];
   encounterUid?: string;
   createdAt: string;
 }

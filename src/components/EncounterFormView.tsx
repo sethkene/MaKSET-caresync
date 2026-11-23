@@ -5,7 +5,6 @@ import {
   Clock,
   FlaskConical,
   Mic,
-  Pill,
   Syringe,
 } from 'lucide-react';
 import {
@@ -14,9 +13,16 @@ import {
   ENCOUNTER_OUTCOMES,
   IMMUNIZATION_SCHEDULE,
   LAB_TESTS,
-  MEDICATIONS,
 } from '../data/initialData';
-import { CareSyncState, Encounter, EncounterType, Patient } from '../types/caresync';
+import {
+  CareSyncState,
+  Encounter,
+  EncounterType,
+  MedicationOrder,
+  Patient,
+} from '../types/caresync';
+import { formatMedicationDisplayLabel } from '../utils/patientIdentity';
+import { MedicationOrderBuilder } from './MedicationOrderBuilder';
 
 interface EncounterFormViewProps {
   state: CareSyncState;
@@ -24,7 +30,11 @@ interface EncounterFormViewProps {
   draft: Encounter;
   onUpdateDraft: (next: Encounter) => void;
   onSendLabOrder: (tests: string[], updatedDraft: Encounter) => void;
-  onSendPharmacyOrder: (meds: string[], updatedDraft: Encounter) => void;
+  onSendPharmacyOrder: (
+    orders: MedicationOrder[],
+    updatedDraft: Encounter,
+    target?: 'patient' | 'mother' | 'newborn'
+  ) => void;
   onSaveAndWaitForLab: (updatedDraft: Encounter) => void;
   onCompleteEncounter: (finalDraft: Encounter) => void;
   onBackHome: () => void;
@@ -44,8 +54,8 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
   onToast,
 }) => {
   const [selectedLabs, setSelectedLabs] = useState<string[]>([]);
-  const [selectedMeds, setSelectedMeds] = useState<string[]>([]);
-  const [otherMed, setOtherMed] = useState('');
+  const [stagedMeds, setStagedMeds] = useState<MedicationOrder[]>([]);
+  const [stagedNewbornMeds, setStagedNewbornMeds] = useState<MedicationOrder[]>([]);
   const [bypassModal, setBypassModal] = useState<'rx' | 'save' | null>(null);
   const [bypassReasonInput, setBypassReasonInput] = useState('');
 
@@ -227,15 +237,50 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
     onUpdateDraft({ ...draft, stage: 2 });
   };
 
-  const handleTriggerPharmacy = (draftWithBypass?: Encounter) => {
+  const toggleCatalogueDrug = (
+    drugName: string,
+    recipient: 'patient' | 'mother' | 'newborn'
+  ) => {
+    const setter = recipient === 'newborn' ? setStagedNewbornMeds : setStagedMeds;
+    setter((prev) => {
+      const existing = prev.find(
+        (o) => o.source === 'catalogue' && o.drugName === drugName
+      );
+      if (existing) {
+        return prev.filter((o) => o.id !== existing.id);
+      }
+      const base = {
+        source: 'catalogue' as const,
+        drugName,
+        recipient,
+      };
+      return [
+        ...prev,
+        {
+          ...base,
+          id: `med-cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          displayLabel: formatMedicationDisplayLabel(base),
+        },
+      ];
+    });
+  };
+
+  const handleTriggerPharmacy = (
+    draftWithBypass?: Encounter,
+    target: 'patient' | 'mother' | 'newborn' = draft.type === 'Labour/Delivery' ? 'mother' : 'patient'
+  ) => {
     const activeDraft = draftWithBypass || draft;
-    const itemsToSend = [...selectedMeds];
-    if (otherMed.trim()) itemsToSend.push(otherMed.trim());
-    if (itemsToSend.length === 0) {
-      onToast('Select at least one medicine first');
+    const queueList = target === 'newborn' ? stagedNewbornMeds : stagedMeds;
+    if (queueList.length === 0) {
+      onToast('Select or manually enter at least one medication first');
       return;
     }
-    if (hasDxSection && !activeDraft.diagnosis.trim()) {
+    if (
+      target !== 'newborn' &&
+      hasDxSection &&
+      activeDraft.type !== 'Labour/Delivery' &&
+      !activeDraft.diagnosis.trim()
+    ) {
       onToast('Enter the diagnosis before sending to pharmacy');
       return;
     }
@@ -243,11 +288,31 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
       setBypassModal('rx');
       return;
     }
-    const mergedRx = Array.from(new Set([...activeDraft.rx, ...itemsToSend]));
-    const updated = { ...activeDraft, rx: mergedRx };
-    onSendPharmacyOrder(itemsToSend, updated);
-    setSelectedMeds([]);
-    setOtherMed('');
+
+    const labelsToSend = queueList.map((o) => o.displayLabel);
+    const mergedOrders = [...(activeDraft.medicationOrders || []), ...queueList];
+
+    if (target === 'newborn') {
+      const mergedNewbornRx = Array.from(
+        new Set([...(activeDraft.newbornRx || []), ...labelsToSend])
+      );
+      const updated: Encounter = {
+        ...activeDraft,
+        newbornRx: mergedNewbornRx,
+        medicationOrders: mergedOrders,
+      };
+      onSendPharmacyOrder(queueList, updated, 'newborn');
+      setStagedNewbornMeds([]);
+    } else {
+      const mergedRx = Array.from(new Set([...activeDraft.rx, ...labelsToSend]));
+      const updated: Encounter = {
+        ...activeDraft,
+        rx: mergedRx,
+        medicationOrders: mergedOrders,
+      };
+      onSendPharmacyOrder(queueList, updated, target);
+      setStagedMeds([]);
+    }
   };
 
   const handleCompleteClick = (draftWithBypass?: Encounter) => {
@@ -256,8 +321,8 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
       onToast('Tap Send lab order for the selected tests first');
       return;
     }
-    if (selectedMeds.length > 0 || otherMed.trim()) {
-      onToast('Tap Send pharmacy order for the selected medicines first');
+    if (stagedMeds.length > 0 || stagedNewbornMeds.length > 0) {
+      onToast('Send or remove the staged medication orders before completing');
       return;
     }
     if (
@@ -609,7 +674,7 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
             </div>
             <div>
               <div className="mb-1.5 text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]">
-                Complications
+                Maternal Complications
               </div>
               {renderMultiChips('Complications', [
                 'None',
@@ -618,6 +683,34 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
                 'Prolonged labour',
                 'Retained placenta',
               ])}
+            </div>
+            <div className="border-t border-[#E3ECE6] dark:border-[#24352B] pt-4 space-y-3">
+              <label className="block text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]">
+                Maternal Clinical Assessment &amp; Diagnosis (separate from newborn observations)
+              </label>
+              <input
+                type="text"
+                value={draft.diagnosis}
+                onChange={(e) => onUpdateDraft({ ...draft, diagnosis: e.target.value })}
+                placeholder="Enter maternal diagnosis or assessment (e.g. Normal spontaneous vaginal delivery)"
+                className="w-full min-h-[42px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#192820] px-3.5 text-sm outline-none focus:border-[#0B5D34]"
+              />
+              <div className="flex flex-wrap gap-2">
+                {['Clinical diagnosis', 'Confirmed by laboratory'].map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => onUpdateDraft({ ...draft, diagnosisMethod: m })}
+                    className={`min-h-[36px] rounded-xl border px-3 text-xs font-semibold ${
+                      draft.diagnosisMethod === m
+                        ? 'border-[#0B5D34] bg-[#0B5D34] text-white'
+                        : 'border-[#D9E3DD] dark:border-[#26382E]'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -673,6 +766,120 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
                 'Cord care',
                 'BCG, OPV0, Hep B0 given',
               ])}
+            </div>
+
+            <div className="border-t border-[#D9E3DD] dark:border-[#254434] pt-4 space-y-3">
+              <div>
+                <div className="font-display text-sm font-bold text-[#0B5D34] dark:text-[#39C27A]">
+                  Complications, Abnormalities or Deformities at Birth
+                </div>
+                <p className="mt-0.5 text-xs text-[#5D6E64] dark:text-[#98AEA1]">
+                  Observational assessment immediately after delivery. Does not require a confirmed medical diagnosis or laboratory test.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const current = extra['Newborn complications status'] || '';
+                    onUpdateDraft({
+                      ...draft,
+                      extra: {
+                        ...extra,
+                        'Newborn complications status':
+                          current === 'No obvious complications or abnormalities observed'
+                            ? ''
+                            : 'No obvious complications or abnormalities observed',
+                        'Newborn complications observed': '',
+                      },
+                    });
+                  }}
+                  className={`min-h-[38px] rounded-xl border px-3 text-xs font-semibold transition ${
+                    extra['Newborn complications status'] ===
+                    'No obvious complications or abnormalities observed'
+                      ? 'border-[#0B5D34] bg-[#0B5D34] text-white'
+                      : 'border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#192820] hover:border-[#0B5D34]'
+                  }`}
+                >
+                  No obvious complications or abnormalities observed
+                </button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {[
+                  'Birth asphyxia / weak cry',
+                  'Respiratory distress',
+                  'Congenital abnormality / deformity',
+                  'Birth trauma / injury',
+                  'Preterm / low birth weight',
+                  'Meconium-stained liquor',
+                  'Hypothermia',
+                ].map((obs) => {
+                  const selected = (extra['Newborn complications observed'] || '')
+                    .split(', ')
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                  const active = selected.includes(obs);
+                  return (
+                    <button
+                      key={obs}
+                      type="button"
+                      onClick={() => {
+                        const next = active
+                          ? selected.filter((x) => x !== obs)
+                          : [...selected, obs];
+                        onUpdateDraft({
+                          ...draft,
+                          extra: {
+                            ...extra,
+                            'Newborn complications observed': next.join(', '),
+                            'Newborn complications status':
+                              next.length > 0 ? '' : extra['Newborn complications status'] || '',
+                          },
+                        });
+                      }}
+                      className={`min-h-[38px] rounded-xl border px-3 text-xs font-semibold transition ${
+                        active
+                          ? 'border-[#C62828] bg-[#C62828] text-white'
+                          : 'border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#192820] hover:border-[#0B5D34]'
+                      }`}
+                    >
+                      {obs}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <textarea
+                rows={2}
+                value={extra['Complications, Abnormalities or Deformities at Birth'] || ''}
+                onChange={(e) =>
+                  setExtra('Complications, Abnormalities or Deformities at Birth', e.target.value)
+                }
+                placeholder="Optional observational notes on any complications, abnormalities, or congenital deformities observed at birth"
+                className="w-full rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#192820] p-3 text-sm outline-none focus:border-[#0B5D34]"
+              />
+            </div>
+
+            <div className="pt-1">
+              <MedicationOrderBuilder
+                title="Newborn Medication / Treatment (Optional)"
+                subtitle="Prescribe or record medication provided to the newborn from the catalogue or via manual entry."
+                recipient="newborn"
+                stagedOrders={stagedNewbornMeds}
+                orderedLabels={draft.newbornRx || []}
+                sendButtonLabel="Send newborn order to pharmacy"
+                onToggleCatalogueDrug={(med) => toggleCatalogueDrug(med, 'newborn')}
+                onAddManualOrder={(order) =>
+                  setStagedNewbornMeds((prev) => [...prev, order])
+                }
+                onRemoveStagedOrder={(id) =>
+                  setStagedNewbornMeds((prev) => prev.filter((o) => o.id !== id))
+                }
+                onSendOrder={() => handleTriggerPharmacy(undefined, 'newborn')}
+                onToast={onToast}
+              />
             </div>
           </div>
         </div>
@@ -1176,7 +1383,7 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
       {/* Stage 2: Diagnosis, Medication & Outcome */}
       {stage === 2 && (
         <>
-          {hasDxSection && (
+          {hasDxSection && draft.type !== 'Labour/Delivery' && (
             <div className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5 space-y-4">
               <h3 className="font-display text-sm font-bold text-[#0B5D34] dark:text-[#39C27A]">
                 Diagnosis
@@ -1213,61 +1420,35 @@ export const EncounterFormView: React.FC<EncounterFormViewProps> = ({
           )}
 
           {hasRxSection && (
-            <div className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5 space-y-4">
-              <div className="flex items-center gap-2 font-display text-sm font-bold text-[#0B5D34] dark:text-[#39C27A]">
-                <Pill className="h-4 w-4" />
-                Medication &amp; Treatment
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {MEDICATIONS.map((med) => {
-                  const on = selectedMeds.includes(med);
-                  return (
-                    <button
-                      key={med}
-                      type="button"
-                      onClick={() =>
-                        setSelectedMeds((prev) =>
-                          prev.includes(med) ? prev.filter((x) => x !== med) : [...prev, med]
-                        )
-                      }
-                      className={`min-h-[40px] rounded-xl border px-3.5 text-xs font-semibold ${
-                        on
-                          ? 'border-[#0B5D34] bg-[#0B5D34] text-white'
-                          : 'border-[#D9E3DD] dark:border-[#26382E]'
-                      }`}
-                    >
-                      {med}
-                    </button>
-                  );
-                })}
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]">
-                  Other treatment or advice (optional)
-                </label>
-                <input
-                  type="text"
-                  value={otherMed}
-                  onChange={(e) => setOtherMed(e.target.value)}
-                  placeholder="Enter custom prescription or advice"
-                  className="w-full min-h-[42px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-[#FAFDFB] dark:bg-[#192820] px-3.5 text-sm"
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleTriggerPharmacy()}
-                  className="min-h-[42px] rounded-xl border border-[#0B5D34] dark:border-[#39C27A] px-4 text-xs font-bold text-[#0B5D34] dark:text-[#39C27A] hover:bg-[#E6F3EC]"
-                >
-                  Send pharmacy order
-                </button>
-                {draft.rx.length > 0 && (
-                  <span className="text-xs text-[#5D6E64] dark:text-[#98AEA1]">
-                    Ordered: {draft.rx.join(', ')}
-                  </span>
-                )}
-              </div>
-            </div>
+            <MedicationOrderBuilder
+              title={
+                draft.type === 'Labour/Delivery'
+                  ? 'Maternal Medication & Treatment'
+                  : 'Medication & Treatment'
+              }
+              subtitle={
+                draft.type === 'Labour/Delivery'
+                  ? 'Medications prescribed for the mother (kept separate from newborn treatment).'
+                  : undefined
+              }
+              recipient={draft.type === 'Labour/Delivery' ? 'mother' : 'patient'}
+              stagedOrders={stagedMeds}
+              orderedLabels={draft.rx}
+              onToggleCatalogueDrug={(med) =>
+                toggleCatalogueDrug(med, draft.type === 'Labour/Delivery' ? 'mother' : 'patient')
+              }
+              onAddManualOrder={(order) => setStagedMeds((prev) => [...prev, order])}
+              onRemoveStagedOrder={(id) =>
+                setStagedMeds((prev) => prev.filter((o) => o.id !== id))
+              }
+              onSendOrder={() =>
+                handleTriggerPharmacy(
+                  undefined,
+                  draft.type === 'Labour/Delivery' ? 'mother' : 'patient'
+                )
+              }
+              onToast={onToast}
+            />
           )}
 
           <div className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5 space-y-3">

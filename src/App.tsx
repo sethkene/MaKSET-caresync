@@ -51,6 +51,7 @@ import {
   Encounter,
   EncounterType,
   FacilityConfig,
+  MedicationOrder,
   NotificationItem,
   ProfileTab,
   Referral,
@@ -68,6 +69,13 @@ import {
   syncNativeStatusBar,
   writeNativeStorage,
 } from './utils/mobile';
+import {
+  createNewPatientIdentifiers,
+  getDisplayPatientId,
+  isValidNin,
+  maskNin,
+  normalizeNin,
+} from './utils/patientIdentity';
 
 const STORAGE_KEY = 'makset_phc_state_v2';
 
@@ -781,7 +789,18 @@ export default function App() {
   );
 
   const handleSendPharmacyOrder = useCallback(
-    (meds: string[], updatedDraft: Encounter) => {
+    (
+      orders: MedicationOrder[],
+      updatedDraft: Encounter,
+      target: 'patient' | 'mother' | 'newborn' = 'patient'
+    ) => {
+      if (orders.length === 0) {
+        showToast('Add at least one medication before sending to pharmacy.');
+        return;
+      }
+      const labels = orders.map((o) => o.displayLabel);
+      const queuePatientName =
+        target === 'newborn' ? `${currentPatient.name} (Newborn)` : currentPatient.name;
       setDraftEncounter(updatedDraft);
       setState((prev) => {
         const exists = prev.encounters.some((e) => e.uid === updatedDraft.uid);
@@ -795,9 +814,10 @@ export default function App() {
             {
               uid: `ph-${Date.now()}`,
               patientId: currentPatient.id,
-              patientName: currentPatient.name,
-              meds: meds.join(', '),
-              items: meds,
+              patientName: queuePatientName,
+              meds: labels.join('; '),
+              items: labels,
+              medicationOrders: orders,
               encounterUid: updatedDraft.uid,
               createdAt: nowTimeLabel(),
             },
@@ -806,7 +826,11 @@ export default function App() {
           pendingCount: prev.pendingCount + 1,
         };
       });
-      showToast('Prescription sent to pharmacy. Pharmacy is alerted.');
+      showToast(
+        target === 'newborn'
+          ? 'Newborn medication order sent to pharmacy. Pharmacy is alerted.'
+          : 'Prescription sent to pharmacy. Pharmacy is alerted.'
+      );
     },
     [currentPatient.id, currentPatient.name, showToast]
   );
@@ -819,12 +843,25 @@ export default function App() {
       const isLiveBirth =
         finalDraft.type === 'Labour/Delivery' &&
         finalDraft.extra?.['Newborn outcome'] === 'Live birth';
+      const newbornIds = isLiveBirth
+        ? createNewPatientIdentifiers(state.patients)
+        : null;
 
       setState((prev) => {
         const nextPatients = [...prev.patients];
-        if (isLiveBirth) {
+        if (isLiveBirth && newbornIds) {
+          const safeIds = prev.patients.some((p) => p.shortId === newbornIds.shortId)
+            ? {
+                ...newbornIds,
+                shortId: createNewPatientIdentifiers(prev.patients).shortId,
+              }
+            : newbornIds;
           nextPatients.push({
-            id: `MAK-0024${prev.patients.length + 11}`,
+            id: safeIds.id,
+            uuid: safeIds.uuid,
+            shortId: safeIds.shortId,
+            shortIdStatus: safeIds.shortIdStatus,
+            linkedMotherId: currentPatient.id,
             name: `Baby of ${currentPatient.name}`,
             sex: finalDraft.extra?.['Newborn sex'] || 'Unknown',
             age: '0 days',
@@ -853,15 +890,23 @@ export default function App() {
         };
       });
 
-      if (isLiveBirth) {
-        toastMsg = 'Saved. A linked newborn patient record was created.';
+      if (isLiveBirth && newbornIds) {
+        toastMsg = `Saved. Linked newborn record created (MaKSET ID ${newbornIds.shortId}).`;
       }
       setDraftEncounter(null);
       setProfileTab('History');
       showToast(toastMsg);
       setStack(['home', 'search', 'profile']);
     },
-    [currentPatient.address, currentPatient.name, currentPatient.ward, showToast, state.offline]
+    [
+      currentPatient.address,
+      currentPatient.id,
+      currentPatient.name,
+      currentPatient.ward,
+      showToast,
+      state.offline,
+      state.patients,
+    ]
   );
 
   const handleTaskSubmit = useCallback(
@@ -972,6 +1017,72 @@ export default function App() {
     [navigate, state.encounters, state.notifications]
   );
 
+  const handleUpdatePatientNin = useCallback(
+    (patientId: string, rawNin: string): boolean => {
+      if (!state.activePermissions.patients || state.position === 'creator') {
+        showToast('You are not authorized to add or update a patient NIN.');
+        return false;
+      }
+
+      const cleanNin = normalizeNin(rawNin);
+      if (!isValidNin(cleanNin)) {
+        showToast('Enter a valid 11-digit NIN.');
+        return false;
+      }
+
+      const targetPatient = state.patients.find((p) => p.id === patientId);
+      if (!targetPatient) {
+        showToast('Patient record not found.');
+        return false;
+      }
+
+      const existingOwner = state.patients.find(
+        (p) => p.id !== patientId && p.nin === cleanNin
+      );
+      if (existingOwner) {
+        showToast(
+          `This NIN is already associated with ${existingOwner.name} (ID ${getDisplayPatientId(
+            existingOwner
+          )}).`
+        );
+        return false;
+      }
+
+      const stamp = nowTimeLabel();
+      const actionVerb = targetPatient.nin ? 'updated' : 'added';
+      const displayPatientId = getDisplayPatientId(targetPatient);
+
+      setState((prev) => ({
+        ...prev,
+        patients: prev.patients.map((p) =>
+          p.id === patientId
+            ? {
+                ...p,
+                nin: cleanNin,
+                ninUpdatedAt: stamp,
+                ninUpdatedBy: prev.staffName,
+                idVerified: undefined,
+              }
+            : p
+        ),
+        pendingCount: prev.offline ? prev.pendingCount + 1 : prev.pendingCount,
+        syncedCount: prev.offline ? prev.syncedCount : prev.syncedCount + 1,
+        auditLog: [
+          `${prev.staffName} ${actionVerb} NIN (${maskNin(cleanNin)}) for ${targetPatient.name} (ID ${displayPatientId})`,
+          ...prev.auditLog,
+        ],
+      }));
+
+      showToast(
+        state.offline
+          ? `Patient NIN ${actionVerb} locally. Will sync when online.`
+          : `Patient NIN ${actionVerb} on profile.`
+      );
+      return true;
+    },
+    [showToast, state.activePermissions.patients, state.offline, state.patients, state.position]
+  );
+
   if (currentScreen === 'splash') {
     return <SplashScreen onContinue={() => setStack(['login'])} />;
   }
@@ -1006,13 +1117,22 @@ export default function App() {
     search: { title: 'Find or Register Patient', subtitle: 'Local device index' },
     register: { title: 'Register Patient', subtitle: 'Capture identity once' },
     verify: { title: 'Verify Patient', subtitle: 'Patient must be present' },
-    profile: { title: currentPatient.name, subtitle: `Patient ID: ${currentPatient.id}` },
-    hist: { title: 'Patient History', subtitle: `${currentPatient.name} · ${currentPatient.id}` },
-    shr: { title: 'Share History', subtitle: `${currentPatient.name} · ${currentPatient.id}` },
+    profile: {
+      title: currentPatient.name,
+      subtitle: `MaKSET ID: ${getDisplayPatientId(currentPatient)}`,
+    },
+    hist: {
+      title: 'Patient History',
+      subtitle: `${currentPatient.name} · ID ${getDisplayPatientId(currentPatient)}`,
+    },
+    shr: {
+      title: 'Share History',
+      subtitle: `${currentPatient.name} · ID ${getDisplayPatientId(currentPatient)}`,
+    },
     sel: { title: 'New Encounter', subtitle: currentPatient.name },
     encounter: {
       title: `${draftEncounter?.type || 'Clinical'} Encounter`,
-      subtitle: `${currentPatient.name} · ${currentPatient.id}`,
+      subtitle: `${currentPatient.name} · ID ${getDisplayPatientId(currentPatient)}`,
     },
     tasks: {
       title: 'Tasks',
@@ -1038,7 +1158,10 @@ export default function App() {
     reports: { title: 'Reports', subtitle: 'Automated monthly facility summary' },
     dash: { title: 'Dashboards', subtitle: '6-tier health system view (illustrative)' },
     surv: { title: 'Surveillance', subtitle: 'IDSR early-warning signals' },
-    cs: { title: 'Case Notification', subtitle: `${currentPatient.name} · ${currentPatient.id}` },
+    cs: {
+      title: 'Case Notification',
+      subtitle: `${currentPatient.name} · ID ${getDisplayPatientId(currentPatient)}`,
+    },
     more: { title: 'Sync & Settings', subtitle: state.activeFacility },
     stf: { title: 'Staff & Access Control', subtitle: state.activeFacility },
     adm: { title: 'Facility Setup & Governance', subtitle: 'Admin configuration' },
@@ -1146,30 +1269,40 @@ export default function App() {
           existingPatients={state.patients}
           ninGateEnabled={state.ninGateEnabled}
           onSavePatient={(patientData) => {
-            const newId = `MAK-0024${state.patients.length + 11}`;
-            const newPatient: CareSyncState['patients'][number] = {
-              ...patientData,
-              id: newId,
-            };
-            setState((prev) => ({
-              ...prev,
-              patients: [...prev.patients, newPatient],
-              verifiedPatients: { ...prev.verifiedPatients, [newId]: true },
-              pendingCount: prev.offline ? prev.pendingCount + 1 : prev.pendingCount,
-              syncedCount: prev.offline ? prev.syncedCount : prev.syncedCount + 1,
-              auditLog: [
-                `${prev.staffName} registered ${newPatient.name}${
-                  newPatient.nin ? '' : ' (temporary ID)'
-                }`,
-                ...prev.auditLog,
-              ],
-            }));
-            setSelectedPatientId(newId);
+            const ids = createNewPatientIdentifiers(state.patients);
+            const cleanNin = normalizeNin(patientData.nin);
+            setState((prev) => {
+              const safeShortId = prev.patients.some((p) => p.shortId === ids.shortId)
+                ? createNewPatientIdentifiers(prev.patients).shortId
+                : ids.shortId;
+              const newPatient: CareSyncState['patients'][number] = {
+                ...patientData,
+                id: ids.id,
+                uuid: ids.uuid,
+                shortId: safeShortId,
+                shortIdStatus: ids.shortIdStatus,
+                nin: cleanNin || undefined,
+              };
+              return {
+                ...prev,
+                patients: [...prev.patients, newPatient],
+                verifiedPatients: { ...prev.verifiedPatients, [ids.id]: true },
+                pendingCount: prev.offline ? prev.pendingCount + 1 : prev.pendingCount,
+                syncedCount: prev.offline ? prev.syncedCount : prev.syncedCount + 1,
+                auditLog: [
+                  `${prev.staffName} registered ${newPatient.name} (ID ${safeShortId})${
+                    cleanNin ? ` · NIN ${maskNin(cleanNin)}` : ''
+                  }`,
+                  ...prev.auditLog,
+                ],
+              };
+            });
+            setSelectedPatientId(ids.id);
             setProfileTab('Summary');
             showToast(
               state.offline
-                ? 'Patient saved offline on this device. Pending sync.'
-                : 'Patient registered and synced.'
+                ? `Patient saved offline (ID ${ids.shortId}). Pending sync.`
+                : `Patient registered (MaKSET ID ${ids.shortId}).`
             );
             setStack(['home', 'search', 'profile']);
           }}
@@ -1216,9 +1349,11 @@ export default function App() {
           state={state}
           patient={currentPatient}
           activeTab={profileTab}
+          canEditNin={state.activePermissions.patients && state.position !== 'creator'}
           onTabChange={setProfileTab}
           onNavigate={(r) => navigate(r)}
           onContinueEncounter={handleOpenReadyEncounter}
+          onUpdatePatientNin={handleUpdatePatientNin}
         />
       )}
 
@@ -1310,6 +1445,11 @@ export default function App() {
               ? state.labQueue.find((t) => t.uid === activeTask.uid)?.items
               : state.pharmQueue.find((t) => t.uid === activeTask.uid)?.items) || []
           }
+          medicationOrders={
+            activeTask.kind === 'ph'
+              ? state.pharmQueue.find((t) => t.uid === activeTask.uid)?.medicationOrders
+              : undefined
+          }
           onSubmit={handleTaskSubmit}
           onToast={showToast}
         />
@@ -1363,6 +1503,9 @@ export default function App() {
       {currentScreen === 'note' && activeReferral && (
         <ReferralNoteView
           referral={activeReferral}
+          patientDisplayId={getDisplayPatientId(
+            state.patients.find((p) => p.id === activeReferral.patientId)
+          )}
           isRegisteredFacility={isRegisteredReferralDest}
           onPromptAutoAccept={handlePromptAutoAccept}
           onViewAllReferrals={() => navigate('refs', true)}

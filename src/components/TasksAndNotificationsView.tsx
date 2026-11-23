@@ -5,7 +5,7 @@ import {
   FlaskConical,
   Pill,
 } from 'lucide-react';
-import { CareSyncState } from '../types/caresync';
+import { CareSyncState, MedicationOrder } from '../types/caresync';
 
 interface TasksViewProps {
   state: CareSyncState;
@@ -78,26 +78,36 @@ export const TasksView: React.FC<TasksViewProps> = ({
             </div>
           ) : (
             <div className="space-y-2.5">
-              {state.pharmQueue.map((item) => (
-                <button
-                  key={item.uid}
-                  type="button"
-                  onClick={() => onOpenPharmTask(item.uid)}
-                  className="flex w-full min-h-[68px] items-center justify-between gap-3 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/15 p-3.5 text-left hover:border-[#0B5D34] transition"
-                >
-                  <div className="min-w-0">
-                    <div className="font-display text-sm font-bold text-[#13221A] dark:text-[#EAF2ED]">
-                      {item.patientName}
+              {state.pharmQueue.map((item) => {
+                const hasManual = item.medicationOrders?.some((m) => m.source === 'manual');
+                return (
+                  <button
+                    key={item.uid}
+                    type="button"
+                    onClick={() => onOpenPharmTask(item.uid)}
+                    className="flex w-full min-h-[68px] items-center justify-between gap-3 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/15 p-3.5 text-left hover:border-[#0B5D34] transition"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-display text-sm font-bold text-[#13221A] dark:text-[#EAF2ED]">
+                          {item.patientName}
+                        </span>
+                        {hasManual && (
+                          <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-[#7A5100] dark:bg-amber-950/60 dark:text-amber-300">
+                            Manual Rx
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-xs text-[#5D6E64] dark:text-[#98AEA1]">
+                        {item.meds} · <span className="font-mono-tabular">{item.createdAt}</span>
+                      </div>
                     </div>
-                    <div className="mt-0.5 text-xs text-[#5D6E64] dark:text-[#98AEA1]">
-                      {item.meds} · <span className="font-mono-tabular">{item.createdAt}</span>
-                    </div>
-                  </div>
-                  <span className="text-xs font-bold text-[#C62828] dark:text-rose-400 whitespace-nowrap shrink-0">
-                    New ›
-                  </span>
-                </button>
-              ))}
+                    <span className="text-xs font-bold text-[#C62828] dark:text-rose-400 whitespace-nowrap shrink-0">
+                      New ›
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -110,6 +120,7 @@ interface TaskDetailViewProps {
   kind: 'lab' | 'ph';
   patientName: string;
   items: string[];
+  medicationOrders?: MedicationOrder[];
   onSubmit: (entries: string[]) => void;
   onToast: (msg: string) => void;
 }
@@ -118,6 +129,7 @@ export const TaskDetailView: React.FC<TaskDetailViewProps> = ({
   kind,
   patientName,
   items,
+  medicationOrders,
   onSubmit,
   onToast,
 }) => {
@@ -153,15 +165,85 @@ export const TaskDetailView: React.FC<TaskDetailViewProps> = ({
         Patient: <strong className="text-[#13221A] dark:text-[#EAF2ED]">{patientName}</strong>
       </div>
 
-      {items.map((item, idx) => (
-        <div
-          key={`${item}-${idx}`}
-          className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5 space-y-3"
-        >
-          <div className="font-display text-base font-bold">{item}</div>
-          <div className="text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]">
-            {isLab ? 'Result' : 'Dispensing Status'}
-          </div>
+      {items.map((item, idx) => {
+        const order = !isLab ? medicationOrders?.[idx] : undefined;
+        return (
+          <div
+            key={`${item}-${idx}`}
+            className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5 space-y-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-display text-base font-bold">
+                {order ? order.drugName : item}
+              </div>
+              {order && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {order.recipient === 'newborn' && (
+                    <span className="rounded-md bg-sky-100 px-2 py-0.5 text-[10px] font-bold uppercase text-sky-900 dark:bg-sky-950/60 dark:text-sky-200">
+                      Newborn
+                    </span>
+                  )}
+                  <span
+                    className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                      order.source === 'manual'
+                        ? 'bg-amber-100 text-[#7A5100] dark:bg-amber-950/60 dark:text-amber-300'
+                        : 'bg-[#E6F3EC] text-[#0B5D34] dark:bg-[#1B3326] dark:text-[#39C27A]'
+                    }`}
+                  >
+                    {order.source === 'manual' ? 'Manual entry' : 'Catalogue'}
+                  </span>
+                </div>
+              )}
+            </div>
+            {order && order.source === 'manual' && (
+              <div className="grid grid-cols-1 gap-1.5 rounded-xl border border-[#E3ECE6] dark:border-[#24352B] bg-[#FAFDFB] dark:bg-[#192820] p-3 text-xs text-[#5D6E64] dark:text-[#98AEA1] sm:grid-cols-2">
+                {order.strength && (
+                  <div>
+                    <strong className="text-[#13221A] dark:text-[#EAF2ED]">Strength:</strong>{' '}
+                    {order.strength}
+                  </div>
+                )}
+                {order.dose && (
+                  <div>
+                    <strong className="text-[#13221A] dark:text-[#EAF2ED]">Dose:</strong>{' '}
+                    {order.dose}
+                  </div>
+                )}
+                {order.route && (
+                  <div>
+                    <strong className="text-[#13221A] dark:text-[#EAF2ED]">Route:</strong>{' '}
+                    {order.route}
+                  </div>
+                )}
+                {order.frequency && (
+                  <div>
+                    <strong className="text-[#13221A] dark:text-[#EAF2ED]">Frequency:</strong>{' '}
+                    {order.frequency}
+                  </div>
+                )}
+                {order.duration && (
+                  <div>
+                    <strong className="text-[#13221A] dark:text-[#EAF2ED]">Duration:</strong>{' '}
+                    {order.duration}
+                  </div>
+                )}
+                {order.quantity && (
+                  <div>
+                    <strong className="text-[#13221A] dark:text-[#EAF2ED]">Quantity:</strong>{' '}
+                    {order.quantity}
+                  </div>
+                )}
+                {order.instructions && (
+                  <div className="sm:col-span-2">
+                    <strong className="text-[#13221A] dark:text-[#EAF2ED]">Instructions:</strong>{' '}
+                    {order.instructions}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="text-xs font-semibold text-[#5D6E64] dark:text-[#98AEA1]">
+              {isLab ? 'Result' : 'Dispensing Status'}
+            </div>
           <div className="flex flex-wrap gap-2">
             {options.map((opt) => (
               <button
@@ -190,8 +272,9 @@ export const TaskDetailView: React.FC<TaskDetailViewProps> = ({
               className="w-full min-h-[44px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-[#FAFDFB] dark:bg-[#192820] px-3.5 text-sm"
             />
           )}
-        </div>
-      ))}
+          </div>
+        );
+      })}
 
       <button
         type="button"

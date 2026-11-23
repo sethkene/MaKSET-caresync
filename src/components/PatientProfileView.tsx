@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
   ArrowUpRight,
   Baby,
   Calendar,
+  Eye,
+  EyeOff,
   FileText,
   FlaskConical,
   HeartHandshake,
   History,
+  Pencil,
   Pill,
   Printer,
   Scale,
@@ -25,6 +28,12 @@ import {
   ProfileTab,
   ScreenRoute,
 } from '../types/caresync';
+import {
+  getDisplayPatientId,
+  isValidNin,
+  maskNin,
+  normalizeNin,
+} from '../utils/patientIdentity';
 
 function getInitials(name: string): string {
   return name
@@ -114,8 +123,18 @@ export const EncounterCard: React.FC<{
         )}
         {encounter.rx.length > 0 && (
           <div>
-            <span className="font-semibold text-[#13221A] dark:text-[#EAF2ED]">Medication:</span>{' '}
-            {encounter.rx.join(', ')} · {encounter.rxStatus || 'awaiting pharmacy'}
+            <span className="font-semibold text-[#13221A] dark:text-[#EAF2ED]">
+              {encounter.type === 'Labour/Delivery' ? 'Maternal Medication:' : 'Medication:'}
+            </span>{' '}
+            {encounter.rx.join('; ')} · {encounter.rxStatus || 'awaiting pharmacy'}
+          </div>
+        )}
+        {encounter.newbornRx && encounter.newbornRx.length > 0 && (
+          <div>
+            <span className="font-semibold text-[#13221A] dark:text-[#EAF2ED]">
+              Newborn Medication:
+            </span>{' '}
+            {encounter.newbornRx.join('; ')} · {encounter.rxStatus || 'awaiting pharmacy'}
           </div>
         )}
         {encounter.outcome && (
@@ -151,19 +170,33 @@ interface PatientProfileViewProps {
   state: CareSyncState;
   patient: Patient;
   activeTab: ProfileTab;
+  canEditNin: boolean;
   onTabChange: (tab: ProfileTab) => void;
   onNavigate: (route: ScreenRoute) => void;
   onContinueEncounter: (encounterUid: string) => void;
+  onUpdatePatientNin: (patientId: string, nin: string) => boolean;
 }
 
 export const PatientProfileView: React.FC<PatientProfileViewProps> = ({
   state,
   patient,
   activeTab,
+  canEditNin,
   onTabChange,
   onNavigate,
   onContinueEncounter,
+  onUpdatePatientNin,
 }) => {
+  const [showFullNin, setShowFullNin] = useState(false);
+  const [editingNin, setEditingNin] = useState(false);
+  const [ninInput, setNinInput] = useState('');
+
+  useEffect(() => {
+    setShowFullNin(false);
+    setEditingNin(false);
+    setNinInput(patient.nin || '');
+  }, [patient.id, patient.nin]);
+
   const patientEncounters = state.encounters
     .filter((e) => e.patientId === patient.id)
     .slice()
@@ -172,31 +205,89 @@ export const PatientProfileView: React.FC<PatientProfileViewProps> = ({
   const pendingLabs = state.labQueue.filter((t) => t.patientId === patient.id).length;
   const activeReferrals = state.referrals.filter((r) => r.patientId === patient.id);
   const emergencyReason = state.emergencyOverrides[patient.id];
+  const cleanNinInput = normalizeNin(ninInput);
+
+  const handleOpenNinEditor = () => {
+    setNinInput(patient.nin || '');
+    setEditingNin(true);
+  };
+
+  const handleSaveNin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isValidNin(cleanNinInput)) {
+      onUpdatePatientNin(patient.id, cleanNinInput);
+      return;
+    }
+    const ok = onUpdatePatientNin(patient.id, cleanNinInput);
+    if (ok) {
+      setEditingNin(false);
+      setShowFullNin(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
       <div className="rounded-2xl border border-[#D9E3DD] dark:border-[#24352B] bg-white dark:bg-[#15221B] p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 min-w-0">
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#E6F3EC] dark:bg-[#1B3326] font-display text-lg font-bold text-[#0B5D34] dark:text-[#39C27A]">
               {getInitials(patient.name)}
             </div>
-            <div>
+            <div className="min-w-0">
               <h2 className="font-display text-xl font-bold text-[#13221A] dark:text-[#EAF2ED]">
                 {patient.name}
               </h2>
               <div className="mt-0.5 text-sm text-[#5D6E64] dark:text-[#98AEA1]">
-                {patient.sex} · {patient.age} · Blood group {patient.bloodGroup} ·{' '}
-                <span className="font-mono-tabular">{patient.id}</span>
+                {patient.sex} · {patient.age} · Blood group {patient.bloodGroup} · MaKSET ID:{' '}
+                <span className="font-mono-tabular font-bold text-[#0B5D34] dark:text-[#39C27A]">
+                  {getDisplayPatientId(patient)}
+                </span>
               </div>
-              {state.ninGateEnabled && (
-                <div className="mt-1 text-xs text-[#5D6E64] dark:text-[#98AEA1]">
-                  NIN {patient.nin ? `•••••••${patient.nin.slice(-4)}` : 'Temporary ID'} ·{' '}
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-[#5D6E64] dark:text-[#98AEA1]">
+                <span>
+                  NIN:{' '}
+                  <span className="font-mono-tabular font-semibold text-[#13221A] dark:text-[#EAF2ED]">
+                    {patient.nin
+                      ? showFullNin && canEditNin
+                        ? patient.nin
+                        : maskNin(patient.nin)
+                      : 'Not provided'}
+                  </span>
+                </span>
+                {patient.nin && canEditNin && (
+                  <button
+                    type="button"
+                    onClick={() => setShowFullNin((prev) => !prev)}
+                    aria-label={showFullNin ? 'Hide NIN' : 'Show NIN'}
+                    className="inline-flex min-h-[28px] items-center gap-1 rounded-lg border border-[#D9E3DD] dark:border-[#26382E] px-2 py-0.5 text-[11px] font-semibold text-[#0B5D34] dark:text-[#39C27A] hover:bg-[#E6F3EC] dark:hover:bg-[#1B3326]"
+                  >
+                    {showFullNin ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                    {showFullNin ? 'Hide' : 'Show'}
+                  </button>
+                )}
+                {canEditNin && !editingNin && (
+                  <button
+                    type="button"
+                    onClick={handleOpenNinEditor}
+                    className="inline-flex min-h-[28px] items-center gap-1 rounded-lg border border-[#D9E3DD] dark:border-[#26382E] px-2.5 py-0.5 text-[11px] font-semibold text-[#0B5D34] dark:text-[#39C27A] hover:bg-[#E6F3EC] dark:hover:bg-[#1B3326]"
+                  >
+                    <Pencil className="h-3 w-3" />
+                    {patient.nin ? 'Update NIN' : 'Add NIN'}
+                  </button>
+                )}
+                {state.ninGateEnabled && (
                   <span className="font-semibold text-[#0B5D34] dark:text-[#39C27A]">
+                    ·{' '}
                     {patient.idVerified === 'Verified'
                       ? 'Identity verified (NIMC)'
                       : 'Identity not verified'}
                   </span>
+                )}
+              </div>
+              {patient.ninUpdatedAt && (
+                <div className="mt-0.5 text-[11px] text-[#6B7C72] dark:text-[#84998D]">
+                  NIN updated {patient.ninUpdatedAt}
+                  {patient.ninUpdatedBy ? ` by ${patient.ninUpdatedBy}` : ''}
                 </div>
               )}
             </div>
@@ -236,6 +327,64 @@ export const PatientProfileView: React.FC<PatientProfileViewProps> = ({
             </button>
           </div>
         </div>
+
+        {editingNin && canEditNin && (
+          <form
+            onSubmit={handleSaveNin}
+            className="mt-4 rounded-xl border border-[#C6DED0] dark:border-[#254434] bg-[#F7FAF8] dark:bg-[#192820] p-4 space-y-3"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <label
+                htmlFor="profile-nin-input"
+                className="font-display text-xs font-bold text-[#0B5D34] dark:text-[#39C27A]"
+              >
+                {patient.nin ? 'Update Patient NIN (11 digits)' : 'Add Patient NIN (11 digits)'}
+              </label>
+              <span
+                className={`text-xs font-mono-tabular font-semibold ${
+                  cleanNinInput.length === 11
+                    ? 'text-[#0B5D34] dark:text-[#39C27A]'
+                    : 'text-[#8A5A00] dark:text-amber-300'
+                }`}
+              >
+                {cleanNinInput.length}/11 digits
+              </span>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                id="profile-nin-input"
+                type="text"
+                inputMode="numeric"
+                maxLength={11}
+                value={ninInput}
+                onChange={(e) => setNinInput(normalizeNin(e.target.value))}
+                placeholder="Enter 11-digit NIN"
+                className="flex-1 min-h-[42px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] bg-white dark:bg-[#15221B] px-3.5 text-sm font-mono-tabular outline-none focus:border-[#0B5D34]"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  className="min-h-[42px] rounded-xl bg-[#0B5D34] px-4 text-xs font-bold text-white hover:bg-[#094D2B] whitespace-nowrap"
+                >
+                  Save NIN
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingNin(false);
+                    setNinInput(patient.nin || '');
+                  }}
+                  className="min-h-[42px] rounded-xl border border-[#D9E3DD] dark:border-[#26382E] px-3.5 text-xs font-semibold hover:bg-white dark:hover:bg-[#15221B]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            <p className="text-[11px] text-[#5D6E64] dark:text-[#98AEA1]">
+              Stored with masked privacy protection on the patient profile. External NIMC verification remains inactive pending formal authorization.
+            </p>
+          </form>
+        )}
 
         {patient.allergies && (
           <div className="mt-4 flex items-center gap-2.5 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-[#FDE4E4] dark:bg-[#381B1B] px-4 py-2.5 text-sm font-bold text-[#C62828] dark:text-rose-200">
@@ -719,7 +868,7 @@ export const ShareHistoryView: React.FC<ShareHistoryViewProps> = ({
               {[
                 `MAKSET — CLINICAL SUMMARY`,
                 `Facility: ${state.activeFacility}`,
-                `Patient: ${patient.name} (${patient.id})`,
+                `Patient: ${patient.name} (MaKSET ID: ${getDisplayPatientId(patient)})`,
                 `Demographics: ${patient.sex}, ${patient.age}, Blood Group ${patient.bloodGroup}`,
                 `Recipient: ${target} (${reason}) · Consent: ${consent}`,
                 `Included Sections: ${included.join(', ')}`,
@@ -727,7 +876,7 @@ export const ShareHistoryView: React.FC<ShareHistoryViewProps> = ({
                 '',
                 ...patientEncounters.map(
                   (e) =>
-                    `${e.time} · ${e.type}\n  Dx: ${e.diagnosis || 'N/A'}\n  Labs: ${e.results.join('; ') || 'None'}\n  Rx: ${e.rx.join(', ') || 'None'}\n  Outcome: ${e.outcome || 'N/A'}`
+                    `${e.time} · ${e.type}\n  Dx: ${e.diagnosis || 'N/A'}\n  Labs: ${e.results.join('; ') || 'None'}\n  Rx: ${e.rx.join('; ') || 'None'}${e.newbornRx?.length ? `\n  Newborn Rx: ${e.newbornRx.join('; ')}` : ''}\n  Outcome: ${e.outcome || 'N/A'}`
                 ),
               ].join('\n')}
             </pre>
